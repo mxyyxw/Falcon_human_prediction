@@ -259,6 +259,11 @@ class StreamVLNNet(Net):
         # Get image processor from vision tower
         self.image_processor = self.model.get_vision_tower().image_processor
         
+        # Add previous action embedding (similar to ResNet policy)
+        self.prev_action_embedding = nn.Embedding(
+            action_space.n + 1, 32  # +1 for start token
+        ).to(self.device)
+        
         # Initialize conversation template
         prompt = f"<video>\nYou are an autonomous navigation assistant. Your task is to <instruction>. Devise an action sequence to follow the instruction using the four actions: TURN LEFT (←) or TURN RIGHT (→) by 15 degrees, MOVE FORWARD (↑) by 25 centimeters, or STOP."
         answer = ""
@@ -531,15 +536,43 @@ class StreamVLNNet(Net):
         # Maintain RNN hidden states for compatibility
         new_rnn_hidden_states = rnn_hidden_states
         
-        # Prepare auxiliary loss state
+        # Fuse additional information for richer features (similar to ResNet policy)
+        x = [features]  # Start with visual features
+        
+        # Add pointgoal information if available
+        if 'agent_0_pointgoal_with_gps_compass' in observations:
+            goal_obs = observations['agent_0_pointgoal_with_gps_compass']
+            # Add goal distance and angle as features
+            x.append(goal_obs)
+        
+        # Add previous action embedding
+        if hasattr(self, 'prev_action_embedding'):
+            if prev_actions is not None:
+                prev_actions_squeezed = prev_actions.squeeze(-1)
+                start_token = torch.zeros_like(prev_actions_squeezed)
+                prev_action_feat = self.prev_action_embedding(
+                    torch.where(masks.view(-1), prev_actions_squeezed + 1, start_token)
+                )
+                x.append(prev_action_feat)
+        
+        # Concatenate all features
+        if len(x) > 1:
+            fused_features = torch.cat(x, dim=1)
+        else:
+            fused_features = features
+        
+        # Prepare auxiliary loss state with both perception and RNN outputs
+        # perception_embed: raw visual features (before fusion)
+        # rnn_output: fused features including goal, action, etc. (after fusion)
         aux_loss_state = {
-            "perception_embed": features,
-            "rnn_output": features,
+            "perception_embed": features,  # Raw visual features
+            "rnn_output": fused_features,  # Fused features with goal + action info
         }
         
         self.step_id += 1
         
-        return features, new_rnn_hidden_states, aux_loss_state
+        # Return fused features for action/value prediction
+        return fused_features, new_rnn_hidden_states, aux_loss_state
 
     @torch.no_grad()
     def generate_action_sequence(
