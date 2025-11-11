@@ -1,0 +1,32 @@
+# StreamVLN Integration Requirements
+# Install these in addition to Falcon/Habitat 3 base requirements
+
+# Core dependencies
+transformers>=4.30.0
+torch>=2.0.0
+torchvision>=0.15.0
+pillow>=9.0.0
+numpy>=1.20.0
+
+# LLaVA and Qwen dependencies
+sentencepiece>=0.1.99
+protobuf>=3.20.0
+tokenizers>=0.13.0
+accelerate>=0.20.0
+
+# Optional but recommended for better performance
+# flash-attn>=2.0.0  # Uncomment if you have CUDA 11.8+
+
+# Habitat 3 (if not already installed)
+# habitat-sim==3.0.0
+# habitat-lab==3.0.0
+
+# Additional utilities
+opencv-python>=4.5.0
+tqdm>=4.60.0
+pyyaml>=5.4.0
+omegaconf>=2.1.0
+
+# For distributed training (optional)
+# tensorboard>=2.8.0
+# wandb>=0.12.0

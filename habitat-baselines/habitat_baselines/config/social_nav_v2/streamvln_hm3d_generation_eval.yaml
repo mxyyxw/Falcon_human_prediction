@@ -1,0 +1,186 @@
+# StreamVLN Generative Evaluation Configuration
+# 使用 StreamVLN 的生成能力进行评估（而非 PPO 采样）
+
+defaults:
+  - /habitat_baselines: habitat_baselines_rl_config_base
+  - /benchmark/nav/pointnav: pointnav_habitat_hm3d
+  - /habitat_baselines/rl/policy/agent_0@habitat_baselines.rl.policy.agent_0: pointnav_resnet_policy
+  - /habitat/simulator/agents@habitat.simulator.agents.agent_0: humanoid_agent
+  - _self_
+
+habitat_baselines:
+  # ==================== 关键：使用 StreamVLN Evaluator ====================
+  evaluator_class: StreamVLNEvaluator
+  
+  evaluate: True
+  load_resume_state_config: False
+  
+  num_environments: 4  # StreamVLN 较慢，建议减少环境数
+  num_updates: -1
+  total_num_steps: -1.0
+  log_interval: 10
+  num_checkpoints: 5
+  checkpoint_interval: -1
+  video_option: []
+  video_dir: "video_dir"
+  video_fps: 10
+  writer_type: 'tb'
+  
+  eval:
+    split: val
+    use_ckpt_config: False
+    should_load_ckpt: False  # StreamVLN 加载自己的模型
+    video_option: ["disk"]
+
+  rl:
+    # ==================== StreamVLN 特定配置 ====================
+    policy:
+      agent_0:
+        name: "StreamVLNPolicy"
+        
+        # StreamVLN 模型路径（必须提供）
+        model_path: null  # 在命令行中指定
+        
+        # StreamVLN 参数
+        num_frames: 32              # 每 32 帧重置 memory
+        num_history: 8              # 保留 8 帧历史
+        num_future_steps: 4         # 生成 4 步动作
+        model_max_length: 4096      # 最大序列长度
+        device: "cuda"
+        
+        # 生成频率控制
+        generate_every_n_steps: 1   # 每 N 步强制重新生成（1=每次缓存空时生成）
+    
+    # ==================== 辅助任务（可选监控）====================
+    compute_aux_losses_in_eval: False  # True 则计算辅助损失（仅监控）
+    
+    auxiliary_losses:
+      people_counting:
+        max_human_num: 6
+      guess_human_position:
+        max_human_num: 6
+      future_trajectory_prediction:
+        max_human_num: 6
+        future_step: 4
+    
+    # PPO 参数（评估时不使用，但保留以兼容配置）
+    ppo:
+      hidden_size: 1024  # StreamVLN 特征维度
+      clip_param: 0.2
+      ppo_epoch: 4
+      num_mini_batch: 2
+      value_loss_coef: 0.5
+      entropy_coef: 0.01
+      lr: 2.5e-4
+      eps: 1.0e-5
+      max_grad_norm: 0.2
+      num_steps: 128
+      use_gae: True
+      gamma: 0.99
+      tau: 0.95
+
+habitat:
+  task:
+    success:
+      success_distance: 0.25
+  
+  gym:
+    obs_keys:
+      # StreamVLN 需要 RGB
+      - agent_0_articulated_agent_jaw_rgb
+      - agent_0_articulated_agent_jaw_depth
+      - agent_0_pointgoal_with_gps_compass
+      
+      # agent_1-6 的动作（Falcon 的动态行人）
+      - agent_1_oracle_nav_action
+      - agent_2_oracle_nav_action
+      - agent_3_oracle_nav_action
+      - agent_4_oracle_nav_action
+      - agent_5_oracle_nav_action
+      - agent_6_oracle_nav_action
+  
+  simulator:
+    type: SocialNavSim-v0
+    seed: 100
+    additional_object_paths: []
+    needs_markers: False
+    auto_sleep: False
+    step_physics: False
+    update_robot: True
+    concur_render: False
+    habitat_sim_v0:
+      allow_sliding: True
+      frustum_culling: True
+      enable_physics: True
+      gpu_device_id: 0
+      gpu_gpu: False
+    
+    agents_order:
+      - agent_0  # 主 agent（StreamVLN 控制）
+      - agent_1  # 动态行人
+      - agent_2
+      - agent_3
+      - agent_4
+      - agent_5
+      - agent_6
+    
+    # agent_0: 主 agent（StreamVLN）
+    agents:
+      agent_0:
+        articulated_agent_type: "KinematicHumanoid"
+        is_set_start_state: True
+        start_position: [0, 0, 0]
+        start_rotation: [1, 0, 0, 0]
+        joint_start_noise: 0.0
+        motion_data_path: "data/humanoids/humanoid_data/walk_motion/CMU_10_04_processed.txt"
+        
+        sim_sensors:
+          agent_0_articulated_agent_jaw_rgb:
+            height: 480
+            width: 640
+            hfov: 79
+            position: [0.0, 1.31, 0.0]
+            orientation: [0.0, 0.0, 0.0]
+          agent_0_articulated_agent_jaw_depth:
+            height: 480
+            width: 640
+            hfov: 79
+            position: [0.0, 1.31, 0.0]
+            orientation: [0.0, 0.0, 0.0]
+      
+      # agent_1-6: 动态行人（oracle 控制）
+      agent_1:
+        is_set_start_state: False
+        radius: 0.3
+        articulated_agent_type: "KinematicHumanoid"
+        motion_data_path: "data/humanoids/humanoid_data/walk_motion/CMU_10_04_processed.txt"
+      
+      agent_2:
+        is_set_start_state: False
+        radius: 0.3
+        articulated_agent_type: "KinematicHumanoid"
+        motion_data_path: "data/humanoids/humanoid_data/walk_motion/CMU_10_05_processed.txt"
+      
+      agent_3:
+        is_set_start_state: False
+        radius: 0.3
+        articulated_agent_type: "KinematicHumanoid"
+        motion_data_path: "data/humanoids/humanoid_data/walk_motion/CMU_10_06_processed.txt"
+      
+      agent_4:
+        is_set_start_state: False
+        radius: 0.3
+        articulated_agent_type: "KinematicHumanoid"
+        motion_data_path: "data/humanoids/humanoid_data/walk_motion/CMU_10_07_processed.txt"
+      
+      agent_5:
+        is_set_start_state: False
+        radius: 0.3
+        articulated_agent_type: "KinematicHumanoid"
+        motion_data_path: "data/humanoids/humanoid_data/walk_motion/CMU_10_08_processed.txt"
+      
+      agent_6:
+        is_set_start_state: False
+        radius: 0.3
+        articulated_agent_type: "KinematicHumanoid"
+        motion_data_path: "data/humanoids/humanoid_data/walk_motion/CMU_10_09_processed.txt"

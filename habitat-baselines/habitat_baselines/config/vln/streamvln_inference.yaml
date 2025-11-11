@@ -1,0 +1,38 @@
+# @package _global_
+#
+# StreamVLN Inference Configuration
+# Use this config for running inference with pretrained StreamVLN model
+#
+
+defaults:
+  - streamvln_vln
+  - _self_
+
+habitat_baselines:
+  trainer_name: "ppo"  # Use PPO trainer for inference
+  num_environments: 1
+  
+  eval:
+    should_load_ckpt: False  # We load StreamVLN model directly
+    use_ckpt_config: False
+    video_option: ["disk"]  # Save videos during evaluation
+    
+  rl:
+    policy:
+      main_agent:
+        # REQUIRED: Set this to your pretrained StreamVLN model path
+        # Example: "/path/to/StreamVLN_Video_qwen_1_5_r2r_rxr_envdrop_scalevln_real_world"
+        model_path: null
+        
+        # Inference parameters
+        num_frames: 32
+        num_history: 8
+        num_future_steps: 4
+        model_max_length: 4096
+        device: "cuda"
+
+# Example usage:
+# python -m habitat_baselines.run \
+#   --config-name=vln/streamvln_inference \
+#   habitat_baselines.rl.policy.main_agent.model_path=/path/to/model \
+#   habitat.dataset.data_path=data/datasets/vln/r2r/v1/val_seen/val_seen.json.gz
