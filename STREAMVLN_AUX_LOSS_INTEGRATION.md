@@ -57,6 +57,111 @@ positions_gt_agent0 = batch["observations"]["localization_sensor"][:, [0, 2]]  #
 positions_gt_relative = positions_gt - positions_gt_agent0_repeated
 ```
 
+## 原始 Falcon 中状态参数的提取
+
+### 配置文件和数据源
+
+在 `falcon_hm3d.yaml` 中：
+```yaml
+habitat:
+  gym:
+    obs_keys:
+      # - agent_0_articulated_agent_jaw_rgb  # 注释掉，不使用RGB
+      - agent_0_articulated_agent_jaw_depth    # ← 使用深度图
+      - agent_0_pointgoal_with_gps_compass     # ← 目标位置
+```
+
+### 完整的提取流程
+
+```
+环境观测 → ResNetEncoder → 视觉特征 → 特征融合 → RNN → aux_loss_state
+```
+
+**步骤详解**:
+
+#### 1. 环境产生观测
+```python
+observations = {
+    'agent_0_articulated_agent_jaw_depth': torch.Tensor([batch, H, W, 1]),  # 深度图
+    'agent_0_pointgoal_with_gps_compass': torch.Tensor([batch, 2]),         # [距离, 角度]
+}
+```
+
+#### 2. ResNetEncoder 处理深度图
+```python
+# 在 ResNetEncoder.forward() 中
+# 输入: depth (batch, H, W, 1)
+depth = observations['agent_0_articulated_agent_jaw_depth']
+depth = depth.permute(0, 3, 1, 2)  # → (batch, 1, H, W)
+depth = depth.float() / 255.0       # 归一化
+depth = F.avg_pool2d(depth, 2)      # 下采样
+x = self.backbone(depth)            # ResNet50: → (batch, 2048, H', W')
+visual_feats = self.compression(x)  # Flatten + Linear: → (batch, 512)
+```
+
+#### 3. PointNavResNetNet 特征融合
+```python
+# 在 PointNavResNetNet.forward() 中
+x = []
+
+# 3.1 视觉特征
+visual_feats = self.visual_encoder(observations)  # (batch, 512)
+visual_feats = self.visual_fc(visual_feats)       # (batch, 512)
+aux_loss_state["perception_embed"] = visual_feats  # ← 保存原始视觉特征
+x.append(visual_feats)
+
+# 3.2 Goal 编码
+goal_obs = observations['agent_0_pointgoal_with_gps_compass']  # (batch, 2)
+# 极坐标变换
+goal_obs_transformed = torch.stack([
+    goal_obs[:, 0],                    # 距离
+    torch.cos(-goal_obs[:, 1]),        # cos(角度)
+    torch.sin(-goal_obs[:, 1]),        # sin(角度)
+], -1)  # → (batch, 3)
+goal_embed = self.tgt_embeding(goal_obs_transformed)  # Linear(3→32): → (batch, 32)
+x.append(goal_embed)
+
+# 3.3 动作历史
+prev_actions = self.prev_action_embedding(prev_actions)  # Embedding: → (batch, 32)
+x.append(prev_actions)
+
+# 3.4 拼接
+fused = torch.cat(x, dim=1)  # (batch, 512 + 32 + 32) = (batch, 576)
+```
+
+#### 4. RNN 处理
+```python
+# 通过 LSTM
+rnn_output, rnn_hidden_states = self.state_encoder(
+    fused,                # (batch, 576)
+    rnn_hidden_states, 
+    masks
+)
+# rnn_output: (batch, 512) ← RNN 输出
+```
+
+#### 5. 构建 aux_loss_state
+```python
+aux_loss_state = {
+    "perception_embed": visual_feats,  # (batch, 512) - 原始视觉特征
+    "rnn_output": rnn_output,          # (batch, 512) - RNN 输出 ← 辅助任务使用！
+}
+
+return rnn_output, rnn_hidden_states, aux_loss_state
+```
+
+### 关键数据来源总结
+
+| 数据 | 来源 | 形状 | 用途 |
+|------|------|------|------|
+| **深度图** | `agent_0_articulated_agent_jaw_depth` | (batch, H, W, 1) | 输入到 ResNetEncoder |
+| **目标位置** | `agent_0_pointgoal_with_gps_compass` | (batch, 2) | Goal 编码 |
+| **视觉特征** | ResNet50 输出 | (batch, 512) | `perception_embed` |
+| **融合特征** | 视觉+Goal+动作拼接 | (batch, 576) | 输入到 RNN |
+| **RNN 输出** | LSTM 输出 | (batch, 512) | `rnn_output` ← **辅助任务使用** |
+
+---
+
 ## ResNet Policy 的实现
 
 在 `resnet_policy.py` 中，状态参数的构建过程：
