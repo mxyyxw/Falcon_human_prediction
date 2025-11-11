@@ -1,0 +1,25 @@
+name: "StreamVLNPolicy"
+
+# 运行前请通过环境变量或 Hydra override 指定模型 checkpoint
+model_path: "${oc.env:STREAMVLN_CHECKPOINT,/share/models/streamvln_checkpoint}"
+device: "cuda"
+attn_implementation: "flash_attention_2"
+use_bfloat16: true
+
+num_frames: 32
+num_future_steps: 4
+num_history: 8
+model_max_length: 4096
+use_memory_tokens: true
+reset_every_episode: true
+use_depth: false
+
+rgb_sensor: "rgb"
+depth_sensor: null
+instruction_sensor: "instruction"
+
+intrinsic:
+  - [192.0, 0.0, 191.42857142857142, 0.0]
+  - [0.0, 192.0, 191.42857142857142, 0.0]
+  - [0.0, 0.0, 1.0, 0.0]
+  - [0.0, 0.0, 0.0, 1.0]

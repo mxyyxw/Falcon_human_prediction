@@ -1,0 +1,8 @@
+numpy==1.23.5
+moviepy==1.0.3
+gitpython
+matplotlib
+Pillow>=9.5.0
+transformers>=4.38.0
+accelerate>=0.27.0
+sentencepiece>=0.1.99

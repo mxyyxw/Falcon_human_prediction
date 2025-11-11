@@ -1,0 +1,39 @@
+# @package _global_
+
+defaults:
+  - /benchmark/nav/vln_r2r: vln_r2r
+  - /habitat_baselines: habitat_baselines_rl_config_base
+  - /habitat_baselines/rl/policy@habitat_baselines.rl.policy.main_agent: streamvln
+  - _self_
+
+habitat:
+  environment:
+    iterator_options:
+      shuffle: False
+  gym:
+    obs_keys:
+      - rgb
+      - instruction
+  simulator:
+    forward_step_size: 0.25
+    turn_angle: 15.0
+
+habitat_baselines:
+  evaluate: True
+  trainer_name: "ddppo"
+  torch_gpu_id: 0
+  num_environments: 1
+  num_updates: 0
+  total_num_steps: 0
+  log_interval: 10
+  force_torch_single_threaded: True
+  eval:
+    should_load_ckpt: False
+    use_ckpt_config: False
+    video_option: []
+  rl:
+    agent:
+      type: "SingleAgentAccessMgr"
+    policy:
+      main_agent:
+        name: "StreamVLNPolicy"
