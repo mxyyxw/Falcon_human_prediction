@@ -1,0 +1,36 @@
+StreamVLN 集成到 Falcon - 创建的文件清单
+========================================
+
+## 核心 Policy 文件
+✓ habitat-baselines/habitat_baselines/rl/ddppo/policy/streamvln_policy.py
+✓ habitat-baselines/habitat_baselines/rl/ddppo/policy/__init__.py (已更新)
+
+## StreamVLN 模块文件
+✓ habitat-baselines/habitat_baselines/rl/ddppo/policy/streamvln/__init__.py
+✓ habitat-baselines/habitat_baselines/rl/ddppo/policy/streamvln/habitat_compat.py
+✓ habitat-baselines/habitat_baselines/rl/ddppo/policy/streamvln/model/stream_video_vln.py
+✓ habitat-baselines/habitat_baselines/rl/ddppo/policy/streamvln/utils/utils.py
+✓ habitat-baselines/habitat_baselines/rl/ddppo/policy/streamvln/llava/ (完整目录)
+
+## 配置文件
+✓ habitat-baselines/habitat_baselines/config/vln/streamvln_vln.yaml
+✓ habitat-baselines/habitat_baselines/config/vln/streamvln_inference.yaml
+
+## 示例和测试
+✓ examples/streamvln_inference_example.py
+✓ test_streamvln_integration.py
+
+## 文档
+✓ STREAMVLN_INTEGRATION.md       (详细集成文档)
+✓ INTEGRATION_SUMMARY.md          (项目总结)
+✓ streamvln_requirements.txt      (依赖列表)
+✓ CREATED_FILES.txt               (本文件)
+
+## 统计信息
+- 核心代码文件: 5 个
+- 配置文件: 2 个
+- 示例/测试: 2 个
+- 文档文件: 4 个
+- 复制的依赖模块: llava, model, utils
+
+总计创建/修改的主要文件: 13+ 个

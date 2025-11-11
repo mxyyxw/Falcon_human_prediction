@@ -1,0 +1,141 @@
+# @package _global_
+#
+# StreamVLN Policy Configuration for Falcon Framework
+# This config integrates StreamVLN (Habitat 2) model into Falcon (Habitat 3)
+#
+
+defaults:
+  - /habitat_baselines: habitat_baselines_rl_config_base
+  - _self_
+
+habitat_baselines:
+  verbose: True
+  trainer_name: "ddppo"
+  torch_gpu_id: 0
+  tensorboard_dir: "tb_streamvln"
+  video_dir: "video_dir_streamvln"
+  test_episode_count: -1
+  eval_ckpt_path_dir: "data/checkpoints/streamvln"
+  num_environments: 1  # StreamVLN works best with single env for now
+  checkpoint_folder: "data/checkpoints/streamvln"
+  num_updates: -1
+  total_num_steps: 1e9
+  log_interval: 10
+  num_checkpoints: 50
+  force_torch_single_threaded: True
+
+  eval:
+    should_load_ckpt: False
+    use_ckpt_config: False
+    extra_sim_sensors: {}
+
+  rl:
+    policy:
+      main_agent:
+        name: "StreamVLNPolicy"
+        
+        # StreamVLN model configuration
+        model_path: null  # REQUIRED: Path to pretrained StreamVLN model
+        
+        # StreamVLN specific parameters
+        num_frames: 32  # Number of frames to process before resetting memory
+        num_history: 8  # Number of history frames to keep in memory
+        num_future_steps: 4  # Number of future steps for action prediction
+        model_max_length: 4096  # Maximum sequence length for the model
+        device: "cuda"  # Device to run the model on
+        
+        # Action distribution type
+        action_distribution_type: "categorical"
+
+    ppo:
+      # PPO parameters (if training, otherwise ignored during inference)
+      clip_param: 0.2
+      ppo_epoch: 1
+      num_mini_batch: 1
+      value_loss_coef: 0.5
+      entropy_coef: 0.01
+      lr: 1e-5  # Lower learning rate for fine-tuning
+      eps: 1e-5
+      max_grad_norm: 0.5
+      num_steps: 64
+      use_gae: True
+      gamma: 0.99
+      tau: 0.95
+      use_linear_clip_decay: False
+      use_linear_lr_decay: False
+      reward_window_size: 50
+      use_normalized_advantage: False
+      hidden_size: 1024  # Must match StreamVLN's output size
+      use_double_buffered_sampler: False
+
+    ddppo:
+      sync_frac: 0.6
+      distrib_backend: NCCL
+      pretrained_weights: null
+      pretrained: False
+      pretrained_encoder: False
+      train_encoder: False  # StreamVLN encoder is frozen by default
+      reset_critic: True
+      
+      # These are kept for compatibility but not used by StreamVLN
+      backbone: "streamvln"
+      rnn_type: "GRU"
+      num_recurrent_layers: 1
+
+    auxiliary_losses: {}
+
+# Habitat task configuration
+habitat:
+  # Simulator configuration
+  simulator:
+    type: "Sim-v0"
+    agents_order:
+      - main_agent
+    
+    # Agent configuration
+    agents:
+      main_agent:
+        height: 1.5
+        radius: 0.1
+        sim_sensors:
+          rgb_sensor:
+            type: "HabitatSimRGBSensor"
+            height: 480
+            width: 640
+            hfov: 79
+            position: [0, 1.25, 0]
+            orientation: [0, 0, 0]
+            uuid: "rgb"
+          depth_sensor:
+            type: "HabitatSimDepthSensor"
+            height: 480
+            width: 640
+            hfov: 79
+            position: [0, 1.25, 0]
+            orientation: [0, 0, 0]
+            min_depth: 0.0
+            max_depth: 10.0
+            uuid: "depth"
+        
+        is_set_start_state: False
+        start_position: [0, 0, 0]
+        start_rotation: [0, 0, 0, 1]
+
+    # Habitat configuration
+    habitat_sim_v0:
+      gpu_device_id: 0
+      gpu_gpu: False
+      allow_sliding: True
+      enable_physics: False
+
+  # Task configuration
+  task:
+    type: "Nav-v0"
+    lab_sensors: {}
+    measurements: {}
+    
+  # Dataset configuration
+  dataset:
+    type: "PointNav-v1"
+    split: "train"
+    data_path: "data/datasets/pointnav/gibson/v1/{split}/{split}.json.gz"
