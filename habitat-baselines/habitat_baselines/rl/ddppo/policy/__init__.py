@@ -17,3 +17,12 @@ from .orca_policy import (  # noqa: F401.
 from .astar_policy import (  # noqa: F401.
     ASTARPolicy,
 )
+
+# NaVILA Policy
+try:
+    from .navila_policy import (  # noqa: F401.
+        NaVILAPolicy,
+        NaVILANet,
+    )
+except ImportError as e:
+    print(f"Warning: NaVILA policy not available: {e}")
