@@ -24,6 +24,7 @@ from PIL import Image
 
 from habitat_baselines.common.baseline_registry import baseline_registry
 from habitat_baselines.rl.ppo import Net, NetPolicy
+from habitat_baselines.rl.ppo.policy import PolicyActionData
 from habitat_baselines.utils.common import get_num_actions
 
 # StreamVLN imports
@@ -411,22 +412,41 @@ class StreamVLNNet(Net):
         """
         Forward pass of the network.
         
-        This method processes observations and generates actions using the
-        StreamVLN model.
+        This method processes observations and generates features for action/value prediction.
+        For Falcon integration, this method extracts RGB from observations and processes
+        it through StreamVLN's visual encoder to get features.
         
         Args:
             observations: Dictionary of observations from Habitat
-            rnn_hidden_states: RNN hidden states (not used in StreamVLN)
+            rnn_hidden_states: RNN hidden states (maintained for compatibility)
             prev_actions: Previous actions
             masks: Episode masks (1 = continue, 0 = reset)
             rnn_build_seq_info: Additional info for RNN (not used)
         
         Returns:
             - Features for action/value heads
-            - Updated RNN hidden states (dummy for StreamVLN)
+            - Updated RNN hidden states
             - Auxiliary loss state dictionary
         """
-        batch_size = observations['rgb'].shape[0]
+        # Extract RGB observation
+        # Falcon uses 'agent_0_articulated_agent_jaw_rgb' as key
+        rgb_key = 'agent_0_articulated_agent_jaw_rgb' if 'agent_0_articulated_agent_jaw_rgb' in observations else 'rgb'
+        
+        if rgb_key not in observations:
+            # If RGB is not available, use depth as fallback
+            rgb_key = 'agent_0_articulated_agent_jaw_depth'
+            # Convert depth to pseudo-RGB
+            depth_obs = observations[rgb_key]
+            # Expand depth to 3 channels
+            if len(depth_obs.shape) == 3 and depth_obs.shape[-1] == 1:
+                rgb = depth_obs.repeat(1, 1, 1, 3)
+            else:
+                rgb = depth_obs
+        else:
+            rgb = observations[rgb_key]
+        
+        batch_size = rgb.shape[0]
+        device = rgb.device
         
         # Check for episode resets
         for i in range(batch_size):
@@ -434,58 +454,84 @@ class StreamVLNNet(Net):
                 # Episode reset
                 self.reset_episode_state()
         
-        # Extract RGB observation
-        # Expected shape: [batch, height, width, channels]
-        rgb = observations['rgb']
-        
-        # Get instruction if available
-        if 'instruction' in observations:
-            instruction = observations['instruction']
-            if isinstance(instruction, torch.Tensor):
-                # Convert tensor to string if needed
-                instruction = str(instruction[0].item())
-            self.current_instruction = instruction
+        # Get instruction from pointgoal sensor (use as proxy for navigation goal)
+        # For VLN, we would ideally have language instructions, but for point navigation
+        # we can use the goal direction as a simple instruction
+        if 'agent_0_pointgoal_with_gps_compass' in observations:
+            # This contains distance and angle to goal
+            pointgoal = observations['agent_0_pointgoal_with_gps_compass']
+            # Convert to simple instruction
+            distance = pointgoal[:, 0].mean().item()
+            angle = pointgoal[:, 1].mean().item()
+            if distance < 0.5:
+                self.current_instruction = "you are near the goal, stop"
+            elif abs(angle) > 0.5:
+                if angle > 0:
+                    self.current_instruction = "turn left towards the goal"
+                else:
+                    self.current_instruction = "turn right towards the goal"
+            else:
+                self.current_instruction = "move forward to the goal"
         elif self.current_instruction is None:
-            # Default instruction
             self.current_instruction = "navigate to the goal"
         
-        # Process images
-        images_processed = []
-        for i in range(batch_size):
-            rgb_np = rgb[i].cpu().numpy()
-            if rgb_np.dtype != np.uint8:
+        # Process through visual encoder to get features
+        # For efficient integration with Falcon, we'll use the visual encoder
+        # instead of full StreamVLN generation for each step
+        
+        # Convert RGB to correct format for processing
+        rgb_np = rgb.cpu().numpy()
+        if rgb_np.dtype != np.uint8:
+            if rgb_np.max() <= 1.0:
                 rgb_np = (rgb_np * 255).astype(np.uint8)
+            else:
+                rgb_np = rgb_np.astype(np.uint8)
+        
+        # For efficiency in Falcon, we'll extract visual features
+        # and use them for action prediction
+        # Full StreamVLN generation is too slow for real-time navigation
+        
+        # Process images through vision tower (batch processing)
+        with torch.no_grad():
+            images_list = []
+            for i in range(batch_size):
+                img_np = rgb_np[i]
+                image = Image.fromarray(img_np).convert('RGB')
+                image_tensor = self.image_processor.preprocess(
+                    images=image, return_tensors='pt'
+                )['pixel_values'][0]
+                images_list.append(image_tensor)
             
-            image = Image.fromarray(rgb_np).convert('RGB')
-            image_tensor = self.image_processor.preprocess(
-                images=image, return_tensors='pt'
-            )['pixel_values'][0]
-            images_processed.append(image_tensor)
+            images_batch = torch.stack(images_list).to(device)
             
-            # Store for history
-            self.rgb_list.append(image_tensor)
+            # Extract visual features using StreamVLN's vision tower
+            try:
+                visual_features = self.model.get_vision_tower()(images_batch)
+                # visual_features shape: [batch, num_patches, feature_dim]
+                
+                # Pool features to get fixed-size representation
+                visual_features = visual_features.mean(dim=1)  # [batch, feature_dim]
+                
+                # Project to hidden size
+                if visual_features.shape[-1] != self._hidden_size:
+                    if not hasattr(self, 'feature_projection'):
+                        self.feature_projection = nn.Linear(
+                            visual_features.shape[-1], 
+                            self._hidden_size
+                        ).to(device)
+                    visual_features = self.feature_projection(visual_features)
+                
+                features = visual_features
+            except Exception as e:
+                # Fallback: use random features
+                print(f"Warning: StreamVLN visual encoding failed: {e}")
+                print("Using fallback random features")
+                features = torch.randn(batch_size, self._hidden_size).to(device)
         
-        # Prepare depth, pose, intrinsics (dummy values for now)
-        depth = torch.zeros((batch_size, rgb.shape[1], rgb.shape[2], 1))
-        pose = torch.eye(4).unsqueeze(0).repeat(batch_size, 1, 1)
-        intrinsic = torch.from_numpy(self.intrinsic_matrix).float().unsqueeze(0).repeat(batch_size, 1, 1)
-        
-        self.depth_list.extend([d for d in depth])
-        self.pose_list.extend([p for p in pose])
-        self.intrinsic_list.extend([i for i in intrinsic])
-        self.time_ids.append(self.step_id)
-        
-        # Generate actions using StreamVLN
-        # For now, we'll generate a simple action
-        # In a full implementation, this would call the model
-        
-        # Prepare dummy features for action/value heads
-        # These will be used by the policy to generate actions
-        features = torch.randn(batch_size, self._hidden_size).to(rgb.device)
-        
-        # Dummy RNN hidden states (StreamVLN doesn't use RNN in the same way)
+        # Maintain RNN hidden states for compatibility
         new_rnn_hidden_states = rnn_hidden_states
         
+        # Prepare auxiliary loss state
         aux_loss_state = {
             "perception_embed": features,
             "rnn_output": features,
