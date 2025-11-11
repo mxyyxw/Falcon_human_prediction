@@ -259,29 +259,10 @@ class StreamVLNNet(Net):
         # Get image processor from vision tower
         self.image_processor = self.model.get_vision_tower().image_processor
         
-        # ==================== 模仿 PointNavResNetNet 的编码器 ====================
-        
-        # 1. Previous action embedding (与 ResNet policy 完全一致)
-        self._n_prev_action = 32
-        if discrete_actions:
-            self.prev_action_embedding = nn.Embedding(
-                action_space.n + 1, self._n_prev_action  # +1 for start token
-            )
-        else:
-            num_actions = get_num_actions(action_space)
-            self.prev_action_embedding = nn.Linear(
-                num_actions, self._n_prev_action
-            )
-        self.prev_action_embedding = self.prev_action_embedding.to(self.device)
-        
-        # 2. Goal embedding (与 ResNet policy 完全一致)
-        # PointGoal 使用极坐标变换: (distance, angle) → (distance, cos(-angle), sin(-angle))
-        # 然后通过 Linear(3, 32) 编码
-        self.tgt_embeding = nn.Linear(3, 32).to(self.device)  # 注意：名字与原代码一致（embeding 而非 embedding）
-        
-        # 3. Visual FC to project StreamVLN features to hidden_size (类似 ResNet policy 的 visual_fc)
-        # StreamVLN 的视觉特征维度可能不同，需要投影到 hidden_size
-        # 这个在 forward 中动态创建，因为我们还不知道 vision_tower 的输出维度
+        # Add previous action embedding (similar to ResNet policy)
+        self.prev_action_embedding = nn.Embedding(
+            action_space.n + 1, 32  # +1 for start token
+        ).to(self.device)
         
         # Initialize conversation template
         prompt = f"<video>\nYou are an autonomous navigation assistant. Your task is to <instruction>. Devise an action sequence to follow the instruction using the four actions: TURN LEFT (←) or TURN RIGHT (→) by 15 degrees, MOVE FORWARD (↑) by 25 centimeters, or STOP."
@@ -349,32 +330,6 @@ class StreamVLNNet(Net):
     @property
     def perception_embedding_size(self):
         return self._hidden_size
-    
-    def _polar_transform_goal(self, goal_observations: torch.Tensor) -> torch.Tensor:
-        """
-        将极坐标 goal 转换为笛卡尔坐标形式（与 PointNavResNetNet 完全一致）。
-        
-        Args:
-            goal_observations: (batch, 2) - [distance, angle]
-        
-        Returns:
-            transformed: (batch, 3) - [distance, cos(-angle), sin(-angle)]
-        """
-        if goal_observations.shape[1] == 2:
-            # 2D polar transform (与 resnet_policy.py 第664-671行完全一致)
-            goal_observations = torch.stack(
-                [
-                    goal_observations[:, 0],           # distance
-                    torch.cos(-goal_observations[:, 1]),  # cos(-angle)
-                    torch.sin(-goal_observations[:, 1]),  # sin(-angle)
-                ],
-                -1,
-            )
-        else:
-            # 如果已经是3维，直接返回
-            assert goal_observations.shape[1] == 3, "Unsupported goal dimensionality"
-        
-        return goal_observations
 
     def parse_actions(self, output: str) -> List[int]:
         """Parse action sequence from model output."""
@@ -525,7 +480,9 @@ class StreamVLNNet(Net):
         elif self.current_instruction is None:
             self.current_instruction = "navigate to the goal"
         
-        # ==================== 视觉特征提取（模仿 PointNavResNetNet 第634-649行）====================
+        # Process through visual encoder to get features
+        # For efficient integration with Falcon, we'll use the visual encoder
+        # instead of full StreamVLN generation for each step
         
         # Convert RGB to correct format for processing
         rgb_np = rgb.cpu().numpy()
@@ -534,6 +491,10 @@ class StreamVLNNet(Net):
                 rgb_np = (rgb_np * 255).astype(np.uint8)
             else:
                 rgb_np = rgb_np.astype(np.uint8)
+        
+        # For efficiency in Falcon, we'll extract visual features
+        # and use them for action prediction
+        # Full StreamVLN generation is too slow for real-time navigation
         
         # Process images through vision tower (batch processing)
         with torch.no_grad():
@@ -556,77 +517,62 @@ class StreamVLNNet(Net):
                 # Pool features to get fixed-size representation
                 visual_features = visual_features.mean(dim=1)  # [batch, feature_dim]
                 
-                # Project to hidden size (类似 PointNavResNetNet 的 visual_fc)
+                # Project to hidden size
                 if visual_features.shape[-1] != self._hidden_size:
-                    if not hasattr(self, 'visual_fc'):
-                        self.visual_fc = nn.Sequential(
-                            nn.Linear(visual_features.shape[-1], self._hidden_size),
-                            nn.ReLU(True),
+                    if not hasattr(self, 'feature_projection'):
+                        self.feature_projection = nn.Linear(
+                            visual_features.shape[-1], 
+                            self._hidden_size
                         ).to(device)
-                    visual_features = self.visual_fc(visual_features)
+                    visual_features = self.feature_projection(visual_features)
                 
-                visual_feats = visual_features
+                features = visual_features
             except Exception as e:
                 # Fallback: use random features
                 print(f"Warning: StreamVLN visual encoding failed: {e}")
                 print("Using fallback random features")
-                visual_feats = torch.randn(batch_size, self._hidden_size).to(device)
+                features = torch.randn(batch_size, self._hidden_size).to(device)
         
-        # ==================== 特征融合（完全模仿 PointNavResNetNet 第632-766行）====================
-        
-        x = []  # 收集所有特征（与原代码完全一致）
-        aux_loss_state = {}  # 辅助损失状态
-        
-        # 1. 视觉特征（对应 resnet_policy.py 第634-649行）
-        aux_loss_state["perception_embed"] = visual_feats  # ← 保存原始视觉特征
-        x.append(visual_feats)
-        
-        # 2. PointGoal with GPS+Compass（对应 resnet_policy.py 第657-691行）
-        if 'agent_0_pointgoal_with_gps_compass' in observations:
-            goal_observations = observations['agent_0_pointgoal_with_gps_compass']
-            
-            # 极坐标变换: (distance, angle) → (distance, cos(-angle), sin(-angle))
-            goal_observations = self._polar_transform_goal(goal_observations)
-            
-            # 通过 Linear(3, 32) 编码
-            goal_embed = self.tgt_embeding(goal_observations)
-            x.append(goal_embed)
-        
-        # 3. 之前的动作（对应 resnet_policy.py 第746-758行）
-        if self.discrete_actions:
-            prev_actions = prev_actions.squeeze(-1)
-            start_token = torch.zeros_like(prev_actions)
-            # The mask means the previous action will be zero, an extra dummy action
-            prev_actions = self.prev_action_embedding(
-                torch.where(masks.view(-1), prev_actions + 1, start_token)
-            )
-        else:
-            prev_actions = self.prev_action_embedding(
-                masks * prev_actions.float()
-            )
-        
-        x.append(prev_actions)
-        
-        # 4. 拼接所有特征（对应 resnet_policy.py 第760行）
-        out = torch.cat(x, dim=1)
-        # out shape: (batch, hidden_size + 32 + 32)
-        
-        # 注意：原始 PointNavResNetNet 这里会通过 RNN (第761-763行)
-        # 但 StreamVLN 没有 RNN，我们直接使用拼接后的特征
-        # 为了保持兼容性，rnn_hidden_states 保持不变
+        # Maintain RNN hidden states for compatibility
         new_rnn_hidden_states = rnn_hidden_states
         
-        # 5. 保存到 aux_loss_state（对应 resnet_policy.py 第764行）
-        # 注意：原始代码保存的是 RNN 输出，这里我们保存拼接后的特征
-        aux_loss_state["rnn_output"] = out  # ← 辅助任务使用这个
+        # Fuse additional information for richer features (similar to ResNet policy)
+        x = [features]  # Start with visual features
+        
+        # Add pointgoal information if available
+        if 'agent_0_pointgoal_with_gps_compass' in observations:
+            goal_obs = observations['agent_0_pointgoal_with_gps_compass']
+            # Add goal distance and angle as features
+            x.append(goal_obs)
+        
+        # Add previous action embedding
+        if hasattr(self, 'prev_action_embedding'):
+            if prev_actions is not None:
+                prev_actions_squeezed = prev_actions.squeeze(-1)
+                start_token = torch.zeros_like(prev_actions_squeezed)
+                prev_action_feat = self.prev_action_embedding(
+                    torch.where(masks.view(-1), prev_actions_squeezed + 1, start_token)
+                )
+                x.append(prev_action_feat)
+        
+        # Concatenate all features
+        if len(x) > 1:
+            fused_features = torch.cat(x, dim=1)
+        else:
+            fused_features = features
+        
+        # Prepare auxiliary loss state with both perception and RNN outputs
+        # perception_embed: raw visual features (before fusion)
+        # rnn_output: fused features including goal, action, etc. (after fusion)
+        aux_loss_state = {
+            "perception_embed": features,  # Raw visual features
+            "rnn_output": fused_features,  # Fused features with goal + action info
+        }
         
         self.step_id += 1
         
-        # 返回（对应 resnet_policy.py 第766行）
-        # out: 用于 action/value prediction
-        # new_rnn_hidden_states: RNN 隐藏状态（保持兼容性）
-        # aux_loss_state: 辅助损失状态
-        return out, new_rnn_hidden_states, aux_loss_state
+        # Return fused features for action/value prediction
+        return fused_features, new_rnn_hidden_states, aux_loss_state
 
     @torch.no_grad()
     def generate_action_sequence(
