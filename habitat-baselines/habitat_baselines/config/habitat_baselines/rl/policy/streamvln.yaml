@@ -1,0 +1,38 @@
+name: "StreamVLNPolicy"
+streamvln:
+  model_path: "/share/home/u19666033/dhj/Falcon/habitat-baselines/checkpoints/streamvln"
+  tokenizer_max_length: 4096
+  num_frames: 32
+  num_future_steps: 4
+  num_history: 8
+  rgb_sensor: null
+  depth_sensor: null
+  instruction_sensor: instruction
+  device: "cuda:0"
+  dtype: "bfloat16"
+  max_new_tokens: 512
+  num_beams: 1
+  do_sample: false
+  add_system_prompt: true
+  system_prompt: "You are a helpful assistant."
+  attn_implementation: "flash_attention_2"
+  use_memory_tokens: true
+  max_envs: 16
+  intrinsic_matrix: null
+  action_token_map:
+    STOP: 0
+    "↑": 1
+    "←": 2
+    "→": 3
+  default_action_token: "STOP"
+  prompt_template: |
+    <video>
+    You are an autonomous navigation assistant. Your task is to <instruction>. Devise an action sequence to follow the instruction using the four actions: TURN LEFT (←) or TURN RIGHT (→) by 15 degrees, MOVE FORWARD (↑) by 25 centimeters, or STOP.
+  conjunctions:
+    - "you can see "
+    - "in front of you is "
+    - "there is "
+    - "you can spot "
+    - "you are toward the "
+    - "ahead of you is "
+    - "in your sight is "
